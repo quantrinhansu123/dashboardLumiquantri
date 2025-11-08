@@ -269,7 +269,7 @@ function ReportForm() {
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
-      <div className="max-w-[95vw] mx-auto px-4">
+      <div className="max-w-[95vw] mx-auto px-8">
         {/* Header */}
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6 border-b-4 border-primary">
           <div className="flex items-center">

@@ -169,16 +169,6 @@ function Login() {
               )}
             </button>
           </form>
-
-          {/* Additional Info */}
-          <div className="mt-6 text-center text-sm text-gray-600">
-            <p>
-              Chưa có tài khoản?{' '}
-              <Link to="/register" className="text-primary hover:text-green-700 font-semibold">
-                Đăng ký ngay
-              </Link>
-            </p>
-          </div>
         </div>
 
         {/* Footer */}

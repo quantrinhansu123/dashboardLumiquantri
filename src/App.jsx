@@ -3,7 +3,6 @@ import Home from './components/Home';
 import ReportForm from './components/ReportForm';
 import ReportDashboard from './components/ReportDashboard';
 import Login from './components/Login';
-import Register from './components/Register';
 import Profile from './components/Profile';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -24,13 +23,13 @@ function Navigation() {
   };
 
   // Don't show navigation on login page
-  if (location.pathname === '/login' || location.pathname === '/register') {
+  if (location.pathname === '/login') {
     return null;
   }
 
   return (
     <nav className="bg-primary shadow-lg">
-      <div className="container mx-auto px-4">
+      <div className="mx-auto px-8">
         <div className="flex items-center justify-between h-16">
           <div className="flex items-center space-x-4">
             <img 
@@ -92,7 +91,6 @@ function App() {
         {/* Routes */}
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
           <Route path="/" element={<ProtectedRoute><Home /></ProtectedRoute>} />
           <Route path="/home" element={<ProtectedRoute><Home /></ProtectedRoute>} />
           <Route path="/dashboard" element={<ProtectedRoute><ReportDashboard /></ProtectedRoute>} />

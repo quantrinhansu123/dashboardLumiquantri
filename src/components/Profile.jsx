@@ -4,6 +4,7 @@ import { database } from '../firebase/config';
 import { useNavigate } from 'react-router-dom';
 import { toast, ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import bcrypt from 'bcryptjs';
 
 function Profile() {
   const navigate = useNavigate();
@@ -24,46 +25,51 @@ function Profile() {
     { value: '', label: 'Chưa chọn team' }
   ]);
 
-  // API Configuration
-  const API_URL = 'https://n-api-gamma.vercel.app/report/generate?tableName=Báo cáo MKT';
+  // Password change states
+  const [showPasswordSection, setShowPasswordSection] = useState(false);
+  const [passwordData, setPasswordData] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  });
+  const [changingPassword, setChangingPassword] = useState(false);
 
   useEffect(() => {
-    loadTeamsFromAPI();
+    loadTeamsFromHumanResources();
     loadUserProfile();
   }, []);
 
-  const loadTeamsFromAPI = async () => {
+  const loadTeamsFromHumanResources = async () => {
     setLoadingTeams(true);
     try {
-      const response = await fetch(API_URL);
-      if (!response.ok) {
-        throw new Error('Failed to fetch teams data');
+      const hrRef = ref(database, 'human_resources');
+      const snapshot = await get(hrRef);
+      
+      if (snapshot.exists()) {
+        const hrData = snapshot.val();
+        
+        // Extract unique teams from human_resources
+        const uniqueTeams = [...new Set(
+          Object.values(hrData)
+            .map(item => item['Team'])
+            .filter(Boolean)
+        )];
+        
+        // Convert to dropdown format
+        const teamOptions = [
+          { value: '', label: 'Chưa chọn team' },
+          ...uniqueTeams.sort().map(team => ({
+            value: team,
+            label: team
+          }))
+        ];
+        
+        setTeams(teamOptions);
+      } else {
+        setTeams([{ value: '', label: 'Chưa chọn team' }]);
       }
-      const result = await response.json();
-      
-      // Check if result has data array
-      const data = result.data || result;
-      
-      if (!Array.isArray(data)) {
-        throw new Error('API response is not an array');
-      }
-      
-      // Extract unique teams from API data
-      const uniqueTeams = [...new Set(data.map(item => item['Team']).filter(Boolean))];
-      
-      // Convert to dropdown format
-      const teamOptions = [
-        { value: '', label: 'Chưa chọn team' },
-        ...uniqueTeams.sort().map(team => ({
-          value: team,
-          label: team
-        }))
-      ];
-      
-      setTeams(teamOptions);
-      console.log('Loaded teams from API:', uniqueTeams);
     } catch (error) {
-      console.error('Error loading teams from API:', error);
+      console.error('Error loading teams from Human Resources:', error);
       setTeams([{ value: '', label: 'Lỗi tải danh sách team' }]);
     } finally {
       setLoadingTeams(false);
@@ -161,6 +167,110 @@ function Profile() {
     });
   };
 
+  const handlePasswordChange = (e) => {
+    const { name, value } = e.target;
+    setPasswordData(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+        
+    // Validation
+    if (passwordData.newPassword.length < 6) {
+      toast.error('Mật khẩu mới phải có ít nhất 6 ký tự!', {
+        position: "top-right",
+        autoClose: 4000,
+      });
+      return;
+    }
+
+    if (passwordData.newPassword !== passwordData.confirmPassword) {
+      toast.error('Mật khẩu mới và xác nhận mật khẩu không khớp!', {
+        position: "top-right",
+        autoClose: 4000,
+      });
+      return;
+    }
+
+    setChangingPassword(true);
+
+    try {
+      const userId = localStorage.getItem('userId');
+      
+      if (!userId) {
+        toast.error('Vui lòng đăng nhập lại!', {
+          position: "top-right",
+          autoClose: 4000,
+        });
+        navigate('/login');
+        return;
+      }
+
+      // Get current user data from Firebase
+      const userRef = ref(database, `users/${userId}`);
+      const snapshot = await get(userRef);
+
+      if (!snapshot.exists()) {
+        toast.error('Không tìm thấy thông tin người dùng!', {
+          position: "top-right",
+          autoClose: 4000,
+        });
+        return;
+      }
+
+      const currentUserData = snapshot.val();
+
+      // Verify current password
+      const passwordMatch = bcrypt.compareSync(
+        passwordData.currentPassword, 
+        currentUserData.password
+      );
+
+      if (!passwordMatch) {
+        toast.error('Mật khẩu hiện tại không đúng!', {
+          position: "top-right",
+          autoClose: 4000,
+        });
+        return;
+      }
+
+
+      // Hash new password
+      const hashedNewPassword = bcrypt.hashSync(passwordData.newPassword, 10);
+
+      // Update password in database
+      await update(userRef, {
+        password: hashedNewPassword
+      });
+
+      // Reset form
+      setPasswordData({
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: ''
+      });
+      setShowPasswordSection(false);
+
+      toast.success('Đổi mật khẩu thành công!', {
+        position: "top-right",
+        autoClose: 3000,
+      });
+
+    } catch (error) {
+      console.error('Error changing password:', error);
+      
+      toast.error(`Không thể đổi mật khẩu: ${error.message}`, {
+        position: "top-right",
+        autoClose: 5000,
+      });
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -176,7 +286,7 @@ function Profile() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-4xl">
+    <div className="mx-auto px-8 py-8 max-w-4xl">
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-800 mb-2">👤 Thông tin cá nhân</h1>
@@ -230,7 +340,12 @@ function Profile() {
               </label>
               <input
                 type="text"
-                value={userData.role === 'admin' ? 'Quản trị viên' : 'Người dùng'}
+                value={
+                  userData.role === 'admin' ? 'Quản trị viên' : 
+                  userData.role === 'leader' ? 'Trưởng nhóm' :
+                  userData.role === 'accountant' || userData.role === 'kế toán' ? 'Kế toán' :
+                  'Nhân viên'
+                }
                 disabled
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-100 text-gray-500 cursor-not-allowed"
               />
@@ -355,6 +470,130 @@ function Profile() {
         </form>
       </div>
 
+      {/* Change Password Section */}
+      <div className="mt-6 bg-white rounded-lg shadow-lg p-8">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-xl font-bold text-gray-800">🔒 Đổi mật khẩu</h2>
+            <p className="text-sm text-gray-600 mt-1">Cập nhật mật khẩu để bảo mật tài khoản</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setShowPasswordSection(!showPasswordSection);
+              setPasswordData({
+                currentPassword: '',
+                newPassword: '',
+                confirmPassword: ''
+              });
+            }}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
+          >
+            {showPasswordSection ? '✕ Đóng' : '🔑 Đổi mật khẩu'}
+          </button>
+        </div>
+
+        {showPasswordSection && (
+          <form onSubmit={handleChangePassword}>
+            <div className="grid grid-cols-1 gap-6">
+              {/* Current Password */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Mật khẩu hiện tại <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  name="currentPassword"
+                  value={passwordData.currentPassword}
+                  onChange={handlePasswordChange}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  placeholder="Nhập mật khẩu hiện tại"
+                  required
+                  disabled={changingPassword}
+                />
+              </div>
+
+              {/* New Password */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Mật khẩu mới <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  name="newPassword"
+                  value={passwordData.newPassword}
+                  onChange={handlePasswordChange}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  placeholder="Nhập mật khẩu mới (tối thiểu 6 ký tự)"
+                  required
+                  minLength={6}
+                  disabled={changingPassword}
+                />
+                <p className="text-xs text-gray-500 mt-1">Mật khẩu phải có ít nhất 6 ký tự</p>
+              </div>
+
+              {/* Confirm Password */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Xác nhận mật khẩu mới <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  name="confirmPassword"
+                  value={passwordData.confirmPassword}
+                  onChange={handlePasswordChange}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  placeholder="Nhập lại mật khẩu mới"
+                  required
+                  disabled={changingPassword}
+                />
+              </div>
+            </div>
+
+            {/* Password Change Buttons */}
+            <div className="mt-6 flex gap-4">
+              <button
+                type="submit"
+                disabled={changingPassword}
+                className={`flex-1 py-3 px-6 rounded-lg font-semibold text-white transition ${
+                  changingPassword
+                    ? 'bg-gray-400 cursor-not-allowed'
+                    : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800'
+                }`}
+              >
+                {changingPassword ? (
+                  <span className="flex items-center justify-center">
+                    <svg className="animate-spin h-5 w-5 mr-3" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Đang cập nhật...
+                  </span>
+                ) : (
+                  '🔒 Cập nhật mật khẩu'
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPasswordSection(false);
+                  setPasswordData({
+                    currentPassword: '',
+                    newPassword: '',
+                    confirmPassword: ''
+                  });
+                }}
+                disabled={changingPassword}
+                className="px-6 py-3 border border-gray-300 rounded-lg font-semibold text-gray-700 hover:bg-gray-50 transition"
+              >
+                Hủy
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+
       {/* Additional Info Card */}
       <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
         <div className="flex items-start">
@@ -366,7 +605,8 @@ function Profile() {
             <ul className="list-disc list-inside space-y-1">
               <li>Tên đăng nhập và vai trò không thể thay đổi</li>
               <li>Thông tin team giúp phân loại báo cáo theo phòng ban</li>
-              <li>Liên hệ quản trị viên nếu cần thay đổi mật khẩu</li>
+              <li>Bạn có thể đổi mật khẩu bất kỳ lúc nào để bảo mật tài khoản</li>
+              <li>Mật khẩu mới phải có ít nhất 6 ký tự</li>
             </ul>
           </div>
         </div>
