@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Link } from 'react-router-dom';
 import { ChevronLeft, RefreshCw } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 export default function DonChiaCSKH() {
   const [allData, setAllData] = useState([]);
@@ -10,23 +10,49 @@ export default function DonChiaCSKH() {
   const [error, setError] = useState(null);
   const [currentEmployee, setCurrentEmployee] = useState(null);
   const [allowedStaffNames, setAllowedStaffNames] = useState(null);
-  
+
   // Filters
   const [searchText, setSearchText] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [filterMonth, setFilterMonth] = useState('');
+  const [filterYear, setFilterYear] = useState(new Date().getFullYear());
   const [filterCSKH, setFilterCSKH] = useState('');
   const [filterTrangThai, setFilterTrangThai] = useState('');
-  
+
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
-  
+
+  // Sync date range when month/year changes
+  useEffect(() => {
+    if (filterMonth && filterYear) {
+      const year = parseInt(filterYear);
+      const month = parseInt(filterMonth);
+      const startDate = new Date(year, month - 1, 1);
+      const endDate = new Date(year, month, 0); // Last day of month
+
+      const formatDateISO = (date) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+      };
+
+      setStartDate(formatDateISO(startDate));
+      setEndDate(formatDateISO(endDate));
+    } else if (!filterMonth && !filterYear) {
+      // Only clear if both are empty (though year usually has value)
+      // Logic from HTML: if !month, clear dates.
+    }
+    // Note: If user manually changes dates, we might want to clear month/year selector?
+    // For now, follow HTML logic: Month change -> set dates.
+  }, [filterMonth, filterYear]);
+
   // Options
   const [trangThaiOptions, setTrangThaiOptions] = useState([]);
   const [cskhOptions, setCskhOptions] = useState([]);
-  
+
   // Data key map for Firebase updates
   const [dataKeyMap, setDataKeyMap] = useState(new Map());
 
@@ -43,10 +69,19 @@ export default function DonChiaCSKH() {
     return '';
   };
 
+  // Helper: Parse money string to number
+  const parseMoney = (value) => {
+    if (!value) return 0;
+    if (typeof value === 'number') return value;
+    // Remove non-numeric characters except minus sign
+    const cleaned = String(value).replace(/[^0-9-]/g, '');
+    return parseFloat(cleaned) || 0;
+  };
+
   // Helper: Format currency
   const formatCurrency = (value) => {
-    if (!value) return '0';
-    const num = Number(value);
+    const num = parseMoney(value);
+    if (num === 0) return '0 ₫';
     const rounded = Math.round(num / 1000) * 1000;
     return rounded.toLocaleString('vi-VN') + ' ₫';
   };
@@ -209,7 +244,7 @@ export default function DonChiaCSKH() {
         const cskh = getRowValue(row, 'CSKH', 'NV_CSKH', 'Nhân viên CSKH') || '';
         if (cskh && cskh.trim()) cskhSet.add(cskh.trim());
       });
-      
+
       setTrangThaiOptions(Array.from(cutoffSet).sort());
       setCskhOptions(Array.from(cskhSet).sort());
 
@@ -232,7 +267,7 @@ export default function DonChiaCSKH() {
 
       result = result.filter(row => {
         const cskh = String(getRowValue(row, 'CSKH', 'NV_CSKH', 'Nhân viên CSKH') || '').trim();
-        
+
         if (viTri === 'NV' || viTri === '') {
           return cskh === hoVaTen;
         } else if (viTri === 'Leader') {
@@ -338,12 +373,12 @@ export default function DonChiaCSKH() {
 
     filteredData.forEach(row => {
       const maDonHang = String(getRowValue(row, 'Mã_đơn_hàng', 'Mã đơn hàng') || '').trim();
-      
+
       if (maDonHang && !seenCodes.has(maDonHang)) {
         seenCodes.add(maDonHang);
         totalDon++;
 
-        const tongTien = Number(getRowValue(row, 'Tổng_tiền_VNĐ', 'Tổng tiền VNĐ', 'Tổng_tiền_VND') || 0);
+        const tongTien = parseMoney(getRowValue(row, 'Tổng_tiền_VNĐ', 'Tổng tiền VNĐ', 'Tổng_tiền_VND'));
         totalTongTien += tongTien;
 
         const cskh = String(getRowValue(row, 'CSKH', 'NV_CSKH') || '').trim();
@@ -463,8 +498,56 @@ export default function DonChiaCSKH() {
         setStartDate('');
         setEndDate('');
         setFilterMonth('');
+        // setFilterYear(new Date().getFullYear()); // Optional: reset year to current?
         break;
     }
+  };
+
+  // Export to CSV
+  const exportToCSV = () => {
+    if (!filteredData.length) {
+      alert('Không có dữ liệu để xuất!');
+      return;
+    }
+
+    const headers = [
+      'STT', 'Mã đơn hàng', 'Ngày lên đơn', 'Name*', 'Phone*', 'Add',
+      'Nhân viên Sale', 'CSKH', 'Mặt hàng', 'Khu vực',
+      'Tổng tiền VNĐ', 'Phí ship', 'Tiền Việt đã đối soát', 'Trạng thái cuối cùng'
+    ];
+
+    const csvContent = [
+      headers.join(','),
+      ...filteredData.map((row, index) => {
+        return [
+          index + 1,
+          `"${getRowValue(row, 'Mã_đơn_hàng', 'Mã đơn hàng') || ''}"`,
+          `"${formatDate(getRowValue(row, 'Ngày_lên_đơn', 'Ngày lên đơn', 'Thời gian lên đơn'))}"`,
+          `"${(getRowValue(row, 'Name', 'Name*', 'Tên lên đơn') || '').replace(/"/g, '""')}"`,
+          `"${(getRowValue(row, 'Phone', 'Phone*', 'phone', 'phone*') || '').replace(/"/g, '""')}"`,
+          `"${(getRowValue(row, 'Add', 'add', 'Địa chỉ', 'Địa_chỉ') || '').replace(/"/g, '""')}"`,
+          `"${getRowValue(row, 'Nhân_viên_Sale', 'Nhân viên Sale') || ''}"`,
+          `"${getRowValue(row, 'CSKH', 'NV_CSKH', 'NV CSKH') || ''}"`,
+          `"${(getRowValue(row, 'Mặt_hàng', 'Mặt hàng') || '').replace(/"/g, '""')}"`,
+          `"${getRowValue(row, 'Khu_vực', 'Khu vực') || ''}"`,
+          parseMoney(getRowValue(row, 'Tổng_tiền_VNĐ', 'Tổng tiền VNĐ', 'Tổng_tiền_VND')),
+          parseMoney(getRowValue(row, 'Phí_ship', 'Phí ship')),
+          parseMoney(getRowValue(row, 'Tiền_Việt_đã_đối_soát', 'Tiền Việt đã đối soát')),
+          `"${getRowValue(row, 'Thời_gian_cutoff', 'Thời gian cutoff') || ''}"`
+        ].join(',');
+      })
+    ].join('\n');
+
+    const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const now = new Date();
+    const fileName = `F3_Data_${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}.csv`;
+    link.setAttribute("href", url);
+    link.setAttribute("download", fileName);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   if (loading) {
@@ -506,8 +589,8 @@ export default function DonChiaCSKH() {
             </div>
           )}
           <div className="bg-green-100 p-3 rounded text-sm">
-            📊 Tổng số: {allData.length.toLocaleString('vi-VN')} đơn | 
-            Lọc được: {filteredData.length.toLocaleString('vi-VN')} đơn | 
+            📊 Tổng số: {allData.length.toLocaleString('vi-VN')} đơn |
+            Lọc được: {filteredData.length.toLocaleString('vi-VN')} đơn |
             Hiển thị: {startIndex + 1}-{Math.min(endIndex, filteredData.length)}
           </div>
         </div>
@@ -524,12 +607,15 @@ export default function DonChiaCSKH() {
                 className="w-full px-3 py-2 border rounded text-sm"
               />
             </div>
+            <select value={filterYear} onChange={(e) => setFilterYear(Number(e.target.value))} className="px-3 py-2 border rounded text-sm">
+              {[2023, 2024, 2025, 2026, 2027, 2028, 2029, 2030].map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
             <select value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} className="px-3 py-2 border rounded text-sm">
               <option value="">Tất cả tháng</option>
-              {[1,2,3,4,5,6,7,8,9,10,11,12].map(m => <option key={m} value={m}>Tháng {m}</option>)}
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => <option key={m} value={m}>Tháng {m}</option>)}
             </select>
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="px-3 py-2 border rounded text-sm" />
-            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="px-3 py-2 border rounded text-sm" />
+            <input type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); setFilterMonth(''); }} className="px-3 py-2 border rounded text-sm" />
+            <input type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); setFilterMonth(''); }} className="px-3 py-2 border rounded text-sm" />
           </div>
 
           <div className="flex flex-wrap gap-3">
@@ -551,6 +637,9 @@ export default function DonChiaCSKH() {
             </div>
             <button onClick={loadF3Data} className="px-3 py-2 bg-green-600 text-white rounded text-sm font-semibold hover:bg-green-700">
               <RefreshCw className="w-4 h-4 inline mr-1" /> Làm mới
+            </button>
+            <button onClick={exportToCSV} className="px-3 py-2 bg-gray-600 text-white rounded text-sm font-semibold hover:bg-gray-700">
+              📥 Xuất Excel (CSV)
             </button>
           </div>
         </div>
@@ -628,7 +717,7 @@ export default function DonChiaCSKH() {
                   const globalIdx = startIndex + idx;
                   const maDonHang = getRowValue(row, 'Mã_đơn_hàng', 'Mã đơn hàng') || '';
                   const trangThai = getRowValue(row, 'Thời_gian_cutoff', 'Thời gian cutoff') || '';
-                  
+
                   return (
                     <tr key={globalIdx} className={idx % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
                       <td className="p-2 text-center">{globalIdx + 1}</td>

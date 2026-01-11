@@ -1,6 +1,7 @@
 import { ChevronLeft, Download, RefreshCw, Search, Settings, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { logDataChange } from '../services/logging';
 import { supabase } from '../supabase/config';
 import { COLUMN_MAPPING, PRIMARY_KEY_COLUMN } from '../types';
 
@@ -12,16 +13,31 @@ function DanhSachDon() {
   const [filterMarket, setFilterMarket] = useState([]);
   const [filterProduct, setFilterProduct] = useState([]);
   const [filterStatus, setFilterStatus] = useState([]);
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  const [enableDateFilter, setEnableDateFilter] = useState(false);
-  const [quickFilter, setQuickFilter] = useState('');
+
+
+  // Date state - default to today
+  const [startDate, setStartDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [endDate, setEndDate] = useState(() => new Date().toISOString().split('T')[0]);
+
+  const [quickFilter, setQuickFilter] = useState('today');
   const [currentPage, setCurrentPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(50);
   const [sortColumn, setSortColumn] = useState(null);
   const [sortDirection, setSortDirection] = useState('asc');
   const [showColumnSettings, setShowColumnSettings] = useState(false);
   const [syncing, setSyncing] = useState(false); // State for sync process
+
+  const defaultColumns = [
+    'Mã đơn hàng',
+    'Ngày lên đơn',
+    'Name*',
+    'Phone*',
+    'Khu vực',
+    'Mặt hàng',
+    'Mã Tracking',
+    'Trạng thái giao hàng',
+    'Tổng tiền VNĐ',
+  ];
 
   // Debounce search text for better performance
   useEffect(() => {
@@ -35,29 +51,38 @@ function DanhSachDon() {
   // Get all available columns from data
   const allAvailableColumns = useMemo(() => {
     if (allData.length === 0) return [];
-    const columns = new Set();
+
+    // Get all potential keys from data
+    const allKeys = new Set();
     allData.forEach(row => {
       Object.keys(row).forEach(key => {
         if (key !== PRIMARY_KEY_COLUMN) {
-          columns.add(key);
+          allKeys.add(key);
         }
       });
     });
-    return Array.from(columns).sort();
+
+    // Strategy:
+    // 1. Start Defaults: Defaults excluding pinned ones
+    // 2. Other/Dynamic Cols: Alphabetic sort
+    // 3. End Cols: Pinned ones (Status, Total)
+
+    const pinnedEndColumns = ['Trạng thái giao hàng', 'Tổng tiền VNĐ'];
+
+    const startDefaults = defaultColumns
+      .filter(col => !pinnedEndColumns.includes(col) && allKeys.has(col));
+
+    const otherCols = Array.from(allKeys)
+      .filter(key => !defaultColumns.includes(key))
+      .sort();
+
+    const endCols = pinnedEndColumns.filter(col => allKeys.has(col));
+
+    return [...startDefaults, ...otherCols, ...endCols];
   }, [allData]);
 
   // Default columns
-  const defaultColumns = [
-    'Mã đơn hàng',
-    'Ngày lên đơn',
-    'Name*',
-    'Phone*',
-    'Khu vực',
-    'Mặt hàng',
-    'Mã Tracking',
-    'Trạng thái giao hàng',
-    'Tổng tiền VNĐ',
-  ];
+
 
   // Load column visibility from localStorage or use defaults
   const [visibleColumns, setVisibleColumns] = useState(() => {
@@ -91,38 +116,21 @@ function DanhSachDon() {
 
   // Load data from Supabase
   const loadData = async () => {
+    if (!startDate || !endDate) return;
+
     setLoading(true);
     try {
-      console.log('Loading orders from Supabase...');
+      console.log('Loading orders from Supabase (Date Range)...');
 
-      let allOrders = [];
-      const pageSize = 1000;
-      let page = 0;
-      let hasMore = true;
+      // Simple fetch with date range
+      const { data: allOrders, error } = await supabase
+        .from('orders')
+        .select('*')
+        .gte('order_date', `${startDate}T00:00:00`)
+        .lte('order_date', `${endDate}T23:59:59`)
+        .order('created_at', { ascending: false });
 
-      while (hasMore) {
-        const from = page * pageSize;
-        const to = from + pageSize - 1;
-
-        const { data, error } = await supabase
-          .from('orders')
-          .select('*')
-          .range(from, to)
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-
-        if (data && data.length > 0) {
-          allOrders = [...allOrders, ...data];
-          if (data.length < pageSize) {
-            hasMore = false;
-          } else {
-            page++;
-          }
-        } else {
-          hasMore = false;
-        }
-      }
+      if (error) throw error;
 
       // Map Supabase columns to existing UI format
       const mappedData = allOrders.map(item => ({
@@ -178,7 +186,7 @@ function DanhSachDon() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [startDate, endDate]);
 
   // Get unique values for filters
   const uniqueMarkets = useMemo(() => {
@@ -333,6 +341,30 @@ function DanhSachDon() {
           errorCount += batch.length;
         } else {
           successCount += batch.length;
+
+          // Log changes asynchronously (don't block UI too much)
+          // We use Promise.all to fire them in parallel for this batch
+          const userEmail = localStorage.getItem('userEmail') || 'system_sync';
+
+          Promise.all(transformedBatch.map(item =>
+            logDataChange({
+              action: 'SYNC_F3',
+              table_name: 'orders',
+              record_id: item.order_code,
+              user_email: userEmail,
+              old_value: 'N/A (Bulk Sync)',
+              new_value: JSON.stringify({
+                status: item.delivery_status,
+                total: item.total_amount_vnd,
+                updated_at: new Date().toISOString()
+              }),
+              details: {
+                message: 'Bản ghi được đồng bộ từ F3',
+                orderCode: item.order_code,
+                customerName: item.customer_name
+              }
+            })
+          )).catch(err => console.error("Logging sync error", err));
         }
       }
 
@@ -372,62 +404,56 @@ function DanhSachDon() {
   // Handle quick filter
   const handleQuickFilter = (value) => {
     setQuickFilter(value);
-    if (!value) {
-      setDateFrom('');
-      setDateTo('');
-      setEnableDateFilter(false);
-      return;
-    }
+    if (!value) return;
 
     const today = new Date();
-    let startDate = new Date();
-    let endDate = new Date();
+    let start = new Date();
+    let end = new Date();
 
     switch (value) {
       case 'today':
-        startDate = new Date(today);
-        endDate = new Date(today);
+        start = new Date(today);
+        end = new Date(today);
         break;
       case 'yesterday':
-        startDate = new Date(today);
-        startDate.setDate(today.getDate() - 1);
-        endDate = new Date(startDate);
+        start = new Date(today);
+        start.setDate(today.getDate() - 1);
+        end = new Date(start);
         break;
       case 'this-week': {
         const dayOfWeek = today.getDay();
         const diff = today.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // Monday
-        startDate = new Date(today.getFullYear(), today.getMonth(), diff);
-        endDate = new Date(startDate);
-        endDate.setDate(startDate.getDate() + 6);
+        start = new Date(today.getFullYear(), today.getMonth(), diff);
+        end = new Date(start);
+        end.setDate(start.getDate() + 6);
         break;
       }
       case 'last-week': {
         const dayOfWeek = today.getDay();
         const diff = today.getDate() - dayOfWeek - 6 + (dayOfWeek === 0 ? -6 : 1); // Last Monday
-        startDate = new Date(today.getFullYear(), today.getMonth(), diff);
-        endDate = new Date(startDate);
-        endDate.setDate(startDate.getDate() + 6);
+        start = new Date(today.getFullYear(), today.getMonth(), diff);
+        end = new Date(start);
+        end.setDate(start.getDate() + 6);
         break;
       }
       case 'this-month':
-        startDate = new Date(today.getFullYear(), today.getMonth(), 1);
-        endDate = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        start = new Date(today.getFullYear(), today.getMonth(), 1);
+        end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
         break;
       case 'last-month':
-        startDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-        endDate = new Date(today.getFullYear(), today.getMonth(), 0);
+        start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        end = new Date(today.getFullYear(), today.getMonth(), 0);
         break;
       case 'this-year':
-        startDate = new Date(today.getFullYear(), 0, 1);
-        endDate = new Date(today.getFullYear(), 11, 31);
+        start = new Date(today.getFullYear(), 0, 1);
+        end = new Date(today.getFullYear(), 11, 31);
         break;
       default:
         return;
     }
 
-    setDateFrom(startDate.toISOString().split('T')[0]);
-    setDateTo(endDate.toISOString().split('T')[0]);
-    setEnableDateFilter(true);
+    setStartDate(start.toISOString().split('T')[0]);
+    setEndDate(end.toISOString().split('T')[0]);
   };
 
   // Filter and sort data
@@ -471,25 +497,8 @@ function DanhSachDon() {
       });
     }
 
-    // Date filter (only if enabled)
-    if (enableDateFilter) {
-      if (dateFrom) {
-        const from = new Date(dateFrom).getTime();
-        data = data.filter(row => {
-          const date = new Date(row["Ngày lên đơn"] || row["Ngày đóng hàng"] || 0).getTime();
-          return date >= from;
-        });
-      }
-      if (dateTo) {
-        const to = new Date(dateTo);
-        to.setHours(23, 59, 59, 999);
-        const toTime = to.getTime();
-        data = data.filter(row => {
-          const date = new Date(row["Ngày lên đơn"] || row["Ngày đóng hàng"] || 0).getTime();
-          return date <= toTime;
-        });
-      }
-    }
+    // Date filter (already applied on server-side)
+    // Removed client-side logic since allData is already filtered
 
     // Sort
     if (sortColumn) {
@@ -502,7 +511,7 @@ function DanhSachDon() {
     }
 
     return data;
-  }, [allData, debouncedSearchText, filterMarket, filterProduct, filterStatus, dateFrom, dateTo, enableDateFilter, sortColumn, sortDirection]);
+  }, [allData, debouncedSearchText, filterMarket, filterProduct, filterStatus, sortColumn, sortDirection]);
 
   // Pagination
   const totalPages = Math.ceil(filteredData.length / rowsPerPage);
@@ -729,38 +738,23 @@ function DanhSachDon() {
               </select>
             </div>
 
-            {/* Date Range Filter with Checkbox */}
+            {/* Date Range Filter */}
             <div className="min-w-[200px]">
-              <label className="text-xs font-semibold text-gray-600 mb-1.5 block flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={enableDateFilter}
-                  onChange={(e) => {
-                    setEnableDateFilter(e.target.checked);
-                    if (!e.target.checked) {
-                      setDateFrom('');
-                      setDateTo('');
-                      setQuickFilter('');
-                    }
-                  }}
-                  className="w-4 h-4 text-[#F37021] border-gray-300 rounded focus:ring-[#F37021]"
-                />
-                <span>Thời gian (Từ - Đến)</span>
+              <label className="text-xs font-semibold text-gray-600 mb-1.5 block">
+                Thời gian (Từ - Đến)
               </label>
               <div className="flex gap-2">
                 <input
                   type="date"
-                  disabled={!enableDateFilter}
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#F37021] disabled:bg-gray-100 disabled:cursor-not-allowed"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#F37021]"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
                 />
                 <input
                   type="date"
-                  disabled={!enableDateFilter}
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#F37021] disabled:bg-gray-100 disabled:cursor-not-allowed"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#F37021]"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
                 />
               </div>
             </div>

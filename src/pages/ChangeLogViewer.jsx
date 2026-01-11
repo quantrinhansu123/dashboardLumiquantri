@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 // Use REST calls to Firebase Realtime Database; avoid using the Firebase SDK here
-import { toast } from "react-toastify";
 import { ChevronLeft } from 'lucide-react';
+import { toast } from "react-toastify";
+import { logDataChange as logDataChangeService } from '../services/logging';
+import { supabase } from '../supabase/config';
 
 export default function ChangeLogViewer() {
   const [changeLogs, setChangeLogs] = useState([]);
@@ -62,56 +64,55 @@ export default function ChangeLogViewer() {
     orderData = null
   ) => {
     try {
-      const changeLogsUrl =
-        "https://lumi-6dff7-default-rtdb.asia-southeast1.firebasedatabase.app/ChangeLog.json";
-
-      const logData = {
-        orderId,
-        changeType, // 'status_change', 'full_update', 'revert_status', 'revert_full_update'
-        oldValue,
-        newValue,
-        userEmail,
-        userRole,
-        timestamp: new Date().toISOString(),
-        orderCode: orderData ? orderData["Mã đơn hàng"] : null,
-        customerName: orderData
-          ? orderData["Name*"] || orderData["Tên lên đơn"]
-          : null,
-        reverted: false, // Thêm trường để track trạng thái hoàn tác
-      };
-
-      await fetch(changeLogsUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(logData),
+      await logDataChangeService({
+        action: changeType,
+        table_name: 'F3', // Assuming Revert affects F3
+        record_id: orderId,
+        old_value: oldValue,
+        new_value: newValue,
+        user_email: userEmail,
+        details: {
+          userRole,
+          orderCode: orderData ? (orderData["Mã đơn hàng"] || orderData.orderCode) : null,
+          customerName: orderData
+            ? orderData["Name*"] || orderData["Tên lên đơn"] || orderData.customerName
+            : null,
+          reverted: false
+        }
       });
     } catch (error) {
       console.error("Error logging change:", error);
-      // Don't throw error to avoid breaking the main update flow
     }
   };
 
   useEffect(() => {
     const fetchChangeLogs = async () => {
       try {
-        const changeLogsUrl =
-          "https://lumi-6dff7-default-rtdb.asia-southeast1.firebasedatabase.app/ChangeLog.json";
-        const response = await fetch(changeLogsUrl);
-        if (!response.ok) {
-          throw new Error("Failed to fetch change logs");
-        }
-        const data = await response.json();
-        if (data) {
-          const logsArray = Object.entries(data).map(([key, value]) => ({
-            id: key,
-            ...value,
-            timestamp: new Date(value.timestamp),
-          }));
+        const { data, error } = await supabase
+          .from('change_logs')
+          .select('*')
+          .order('created_at', { ascending: false });
 
-          // Sort by timestamp descending (newest first)
-          logsArray.sort((a, b) => b.timestamp - a.timestamp);
+        if (error) {
+          throw error;
+        }
+
+        if (data) {
+          const logsArray = data.map((log) => ({
+            id: log.id,
+            orderId: log.record_id,
+            changeType: log.action,
+            oldValue: log.old_value,
+            newValue: log.new_value,
+            userEmail: log.user_email,
+            userRole: log.details?.userRole || 'unknown',
+            timestamp: new Date(log.created_at),
+            orderCode: log.details?.orderCode || '',
+            customerName: log.details?.customerName || '',
+            reverted: log.details?.reverted || false,
+            // Keep original log object properties mapped if needed
+            ...log.details
+          }));
 
           setChangeLogs(logsArray);
           setLastLogCount(logsArray.length);
@@ -121,9 +122,9 @@ export default function ChangeLogViewer() {
         }
       } catch (error) {
         console.error("Error fetching change logs:", error);
-        toast.error("Lỗi khi tải lịch sử thay đổi", {
+        toast.error("Lỗi Supabase: " + (error.message || JSON.stringify(error)), {
           position: "top-right",
-          autoClose: 5000,
+          autoClose: 10000, // Longer duration to read
         });
       } finally {
         setLoading(false);
@@ -722,16 +723,30 @@ export default function ChangeLogViewer() {
         toast.success("Đã hoàn tác cập nhật đầy đủ");
       }
 
-      // Mark the original log as reverted
-      const changeLogsUrl =
-        "https://lumi-6dff7-default-rtdb.asia-southeast1.firebasedatabase.app/ChangeLog.json";
-      await fetch(`${changeLogsUrl}/${logToRevert.id}.json`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ reverted: true }),
-      });
+      // Mark the original log as reverted in Supabase
+      // We need to fetch the current details first to avoid overwriting other detail fields
+      // Optimization: use the 'logToRevert' object which contains the details from the list view (mapped)
+      // but 'logToRevert' in state has flattened props. We need to construct the new details object.
+
+      const newDetails = {
+        ...logToRevert, // This has flattened props like userRole, orderCode, etc.
+        reverted: true
+      };
+      // Clean up top-level props that are not in details (id, timestamp, etc are top level in state, but were flattened from details?)
+      // Actually, my fetchChangeLogs mapped: userRole: details.userRole.
+      // So I should reconstruct 'details' from the flattened object OR just patch the 'details' column if possible.
+      // Safest way: Just update the specific key in the JSONB column if Supabase supported it easily via JS client, 
+      // but standard update replaces the column.
+
+      // Since I don't want to break other details, I'll assume logToRevert has all I need or I can just set reverted: true in details if I don't care about others?
+      // No, better to get the current row.
+
+      const { data: currentLog } = await supabase.from('change_logs').select('details').eq('id', logToRevert.id).single();
+      if (currentLog) {
+        await supabase.from('change_logs').update({
+          details: { ...currentLog.details, reverted: true }
+        }).eq('id', logToRevert.id);
+      }
 
       // Update local state to reflect the change immediately
       setChangeLogs((prevLogs) =>
@@ -745,8 +760,7 @@ export default function ChangeLogViewer() {
       closeModal();
 
       toast.success(
-        `Hoàn tác thành công! Đơn ${
-          logToRevert.orderCode || "N/A"
+        `Hoàn tác thành công! Đơn ${logToRevert.orderCode || "N/A"
         } đã được khôi phục.`,
         {
           position: "top-right",
@@ -803,11 +817,23 @@ export default function ChangeLogViewer() {
       // For status changes (usually just one field)
       if (entries.length === 1) {
         const [key, val] = entries[0];
-        return `${key}: ${val || "N/A"}`;
+        return (
+          <div className="text-sm">
+            <span className="font-semibold">{key}:</span> {val || "N/A"}
+          </div>
+        );
       }
 
       // For full updates, show key-value pairs
-      return entries.map(([key, val]) => `${key}: ${val || "N/A"}`).join("\n");
+      return (
+        <ul className="list-disc list-inside text-sm space-y-1">
+          {entries.map(([key, val]) => (
+            <li key={key} className="break-words">
+              <span className="font-semibold">{key}:</span> {String(val || "N/A")}
+            </li>
+          ))}
+        </ul>
+      );
     }
 
     // Ensure we always return a string, never an object
@@ -866,11 +892,10 @@ export default function ChangeLogViewer() {
             return (
               <div
                 key={index}
-                className={`p-3 rounded border ${
-                  changed
-                    ? "border-orange-400 bg-orange-50"
-                    : "border-gray-200 bg-gray-50"
-                }`}
+                className={`p-3 rounded border ${changed
+                  ? "border-orange-400 bg-orange-50"
+                  : "border-gray-200 bg-gray-50"
+                  }`}
               >
                 <div className="font-medium text-gray-700 mb-1">{key}</div>
                 {newOrderData ? (
@@ -1238,12 +1263,12 @@ export default function ChangeLogViewer() {
                       {log.changeType === "status_change"
                         ? "Thay đổi trạng thái"
                         : log.changeType === "full_update"
-                        ? "Cập nhật đầy đủ"
-                        : log.changeType === "revert_status"
-                        ? "Hoàn tác trạng thái"
-                        : log.changeType === "revert_full_update"
-                        ? "Hoàn tác cập nhật"
-                        : log.changeType}
+                          ? "Cập nhật đầy đủ"
+                          : log.changeType === "revert_status"
+                            ? "Hoàn tác trạng thái"
+                            : log.changeType === "revert_full_update"
+                              ? "Hoàn tác cập nhật"
+                              : log.changeType}
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -1382,12 +1407,12 @@ export default function ChangeLogViewer() {
                         {selectedLog.changeType === "status_change"
                           ? "Thay đổi trạng thái"
                           : selectedLog.changeType === "full_update"
-                          ? "Cập nhật đầy đủ"
-                          : selectedLog.changeType === "revert_status"
-                          ? "Hoàn tác trạng thái"
-                          : selectedLog.changeType === "revert_full_update"
-                          ? "Hoàn tác cập nhật"
-                          : selectedLog.changeType}
+                            ? "Cập nhật đầy đủ"
+                            : selectedLog.changeType === "revert_status"
+                              ? "Hoàn tác trạng thái"
+                              : selectedLog.changeType === "revert_full_update"
+                                ? "Hoàn tác cập nhật"
+                                : selectedLog.changeType}
                       </span>
                     </div>
                     <div>
@@ -1421,15 +1446,15 @@ export default function ChangeLogViewer() {
                           <div>
                             <div className="mb-1">
                               <span className="font-medium">Giá trị cũ:</span>{" "}
-                              <span className="text-gray-700">
-                                {renderValue(summary.old)}
-                              </span>
+                              <div className="text-gray-700 mt-1">
+                                {formatChangeValue(summary.old)}
+                              </div>
                             </div>
-                            <div>
+                            <div className="mt-2">
                               <span className="font-medium">Giá trị mới:</span>{" "}
-                              <span className="text-gray-700">
-                                {renderValue(summary.new)}
-                              </span>
+                              <div className="text-gray-700 mt-1">
+                                {formatChangeValue(summary.new)}
+                              </div>
                             </div>
                           </div>
                         );
@@ -1626,9 +1651,9 @@ export default function ChangeLogViewer() {
                       const newValueForView =
                         selectedLog.changeType === "status_change"
                           ? {
-                              ...orderDataToShow,
-                              "Trạng thái đơn": selectedLog.newValue,
-                            }
+                            ...orderDataToShow,
+                            "Trạng thái đơn": selectedLog.newValue,
+                          }
                           : selectedLog.newValue;
 
                       return (
@@ -1686,8 +1711,7 @@ export default function ChangeLogViewer() {
                       onClick={() => {
                         openConfirmRevert(selectedLog);
                         toast.info(
-                          `Chuẩn bị hoàn tác thay đổi của đơn ${
-                            selectedLog.orderCode || "N/A"
+                          `Chuẩn bị hoàn tác thay đổi của đơn ${selectedLog.orderCode || "N/A"
                           }`,
                           {
                             position: "top-right",
@@ -1779,12 +1803,12 @@ export default function ChangeLogViewer() {
                       {logToRevert.changeType === "status_change"
                         ? "Thay đổi trạng thái"
                         : logToRevert.changeType === "full_update"
-                        ? "Cập nhật đầy đủ"
-                        : logToRevert.changeType === "revert_status"
-                        ? "Hoàn tác trạng thái"
-                        : logToRevert.changeType === "revert_full_update"
-                        ? "Hoàn tác cập nhật"
-                        : logToRevert.changeType}
+                          ? "Cập nhật đầy đủ"
+                          : logToRevert.changeType === "revert_status"
+                            ? "Hoàn tác trạng thái"
+                            : logToRevert.changeType === "revert_full_update"
+                              ? "Hoàn tác cập nhật"
+                              : logToRevert.changeType}
                     </span>
                   </div>
                   <div>
@@ -1846,9 +1870,9 @@ export default function ChangeLogViewer() {
                   const newValueForView =
                     logToRevert.changeType === "status_change"
                       ? {
-                          ...orderDataToShow,
-                          "Trạng thái đơn": logToRevert.newValue,
-                        }
+                        ...orderDataToShow,
+                        "Trạng thái đơn": logToRevert.newValue,
+                      }
                       : logToRevert.newValue;
 
                   return (
