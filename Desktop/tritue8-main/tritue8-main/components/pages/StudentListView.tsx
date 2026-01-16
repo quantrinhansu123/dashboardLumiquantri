@@ -4010,51 +4010,60 @@ const StudentTuitionTab: React.FC<{
     return studentsList;
   }, [classes, students, tuitionClassFilter]);
 
-  // Tính toán học phí cố định (không theo tháng)
+  // Tính toán học phí từ Điểm danh (attendance sessions) thay vì từ Lớp học
   const monthlyStats = useMemo(() => {
     // Sử dụng studentsFromClasses thay vì students
     const stats = studentsFromClasses.map((student) => {
-      // Tính học phí cố định từ bảng Lớp học
-      // Lấy tất cả các lớp học sinh đang học
-      const studentClasses = student["Lớp học"] || [];
+      // Tính học phí từ Điểm danh (attendance sessions)
+      // Lấy tất cả sessions mà học sinh có mặt hoặc vắng có phép
+      const studentId = student.id;
       let totalRevenue = 0;
       let totalSessions = 0;
 
-      // Tính học phí cho từng lớp học sinh đang học
-      if (Array.isArray(studentClasses)) {
-        studentClasses.forEach((classId: string) => {
-          const classInfo = classesMap.get(classId);
-          if (!classInfo) return;
+      // Lọc sessions có học sinh này tham gia
+      const studentSessions = allAttendanceSessions.filter((session) => {
+        const attendanceRecords = session["Điểm danh"] || [];
+        return attendanceRecords.some(
+          (record: any) =>
+            record["Student ID"] === studentId &&
+            (record["Có mặt"] === true || record["Vắng có phép"] === true)
+        );
+      });
 
-          // Lấy học phí mỗi buổi từ lớp
-          const tuitionPerSession = classInfo["Học phí mỗi buổi"] || 0;
-          if (!tuitionPerSession) return;
+      // Tính học phí từ từng session
+      studentSessions.forEach((session) => {
+        const classId = session["Class ID"];
+        const classInfo = classesMap.get(classId);
 
-          // Lấy mức giảm học phí từ lớp (nếu có)
+        // Ưu tiên lấy giá từ session đã lưu, fallback về class/course
+        let pricePerSession = 0;
+
+        if (session["Học phí mỗi buổi"]) {
+          // Ưu tiên từ session (lớp mới thêm không có trong Lớp học)
+          pricePerSession = parseFloat(String(session["Học phí mỗi buổi"])) || 0;
+        } else if (classInfo) {
+          // Fallback về class/course
+          const coursePrice = getCoursePrice(classInfo, coursesMap);
+          pricePerSession = coursePrice || 0;
+
+          // Áp dụng mức giảm học phí từ lớp (nếu có)
           const classDiscount = classInfo["Mức giảm học phí"] || 0;
-          let pricePerSession = tuitionPerSession;
-
-          // Áp dụng mức giảm
-          if (classDiscount > 0) {
+          if (classDiscount > 0 && pricePerSession > 0) {
             if (classDiscount <= 100) {
               // Phần trăm
-              pricePerSession = tuitionPerSession * (1 - classDiscount / 100);
+              pricePerSession = pricePerSession * (1 - classDiscount / 100);
             } else {
               // Số tiền cố định
-              pricePerSession = Math.max(0, tuitionPerSession - classDiscount);
+              pricePerSession = Math.max(0, pricePerSession - classDiscount);
             }
           }
+        }
 
-          // Lấy số buổi học từ lịch học của lớp (tính theo tuần × số tuần trong tháng)
-          // Hoặc có thể lấy từ cấu hình lớp nếu có
-          const weeklySessions = classInfo["Lịch học"]?.length || 0;
-          const sessionsPerMonth = weeklySessions * 4; // Mặc định 4 tuần/tháng
-
-          // Tính học phí cho lớp này
-          totalRevenue += pricePerSession * sessionsPerMonth;
-          totalSessions += sessionsPerMonth;
-        });
-      }
+        if (pricePerSession > 0) {
+          totalSessions += 1;
+          totalRevenue += pricePerSession;
+        }
+      });
 
       // Tìm hóa đơn của học sinh (không theo tháng, dùng key đơn giản)
       const invoiceKey = student.id;

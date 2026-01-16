@@ -185,10 +185,29 @@ const AttendanceSessionPage = () => {
         });
       };
 
-      // Get class info and price for current class
+      // Ưu tiên lấy giá từ session đã lưu, fallback về class/course
+      // Load session để lấy giá nếu có
+      const sessionsRes = await fetch(`${DATABASE_URL_BASE}/datasheet/Điểm_danh_sessions.json`);
+      const sessionsData = await sessionsRes.json();
+      const sessionsList = sessionsData
+        ? Object.entries(sessionsData).map(([id, value]: [string, any]) => ({ id, ...(value as any) }))
+        : [];
+      
+      // Tìm session tương ứng với class và ngày hiện tại
+      // sessionDate là biến trong component scope (dòng 61-62)
+      const sessionDateStr = sessionDate || dayjs().format("YYYY-MM-DD");
+      const currentSession = sessionsList.find(
+        (s: any) => s["Class ID"] === currentClassId && s["Ngày"] === sessionDateStr
+      );
+      
+      // Ưu tiên: Session đã lưu > Class > Course
       const classInfo = classesMap[currentClassId];
       const course = findCourse(classInfo);
-      const pricePerSession = course?.Giá || classInfo?.["Học phí mỗi buổi"] || 0;
+      const pricePerSession = 
+        currentSession?.["Học phí mỗi buổi"] ||  // Ưu tiên từ session
+        classInfo?.["Học phí mỗi buổi"] ||       // Fallback về class
+        course?.Giá ||                            // Fallback về course
+        0;
 
       if (pricePerSession === 0) {
         console.log("[InvoiceSync] Skipped - pricePerSession is 0 for class", currentClassId);
@@ -1209,7 +1228,9 @@ const AttendanceSessionPage = () => {
           "New Trạng thái": "completed"
         });
         
-        const updateData = {
+        // Giữ nguyên học phí và lương từ session hiện có
+        // Đảm bảo liên kết với học phí học sinh và lương giáo viên được giữ nguyên
+        const updateData: any = {
           "Trạng thái": "completed",
           "Điểm danh": attendanceRecords,
           "Thời gian hoàn thành": completionTime,
@@ -1227,6 +1248,14 @@ const AttendanceSessionPage = () => {
                 }
               : undefined,
         };
+        
+        // Giữ nguyên học phí và lương từ session cũ để đảm bảo liên kết với học phí học sinh và lương giáo viên
+        if (existingSession["Học phí mỗi buổi"]) {
+          updateData["Học phí mỗi buổi"] = existingSession["Học phí mỗi buổi"];
+        }
+        if (existingSession["Lương GV"]) {
+          updateData["Lương GV"] = existingSession["Lương GV"];
+        }
 
         const cleanedData = cleanData(updateData);
         const sessionRef = ref(
@@ -1260,6 +1289,58 @@ const AttendanceSessionPage = () => {
           "👤 Person completing": userProfile?.displayName || userProfile?.email,
         });
         
+        // Tính học phí và lương từ class/course và lưu vào session
+        // Học phí: liên kết với học phí học sinh
+        // Lương GV: liên kết với lương giáo viên
+        let tuitionPerSession = 0;
+        let salaryPerSession = 0;
+        try {
+          const coursesRes = await fetch(`${DATABASE_URL_BASE}/datasheet/Kh%C3%B3a_h%E1%BB%8Dc.json`);
+          const coursesData = await coursesRes.json();
+          const coursesList = coursesData
+            ? Object.entries(coursesData).map(([id, value]: [string, any]) => ({ id, ...(value as any) }))
+            : [];
+          
+          const findCourse = (classInfo: Class) => {
+            if (!classInfo) return undefined;
+            const classSubject = classInfo["Môn học"];
+            const classGrade = classInfo["Khối"];
+            return coursesList.find((c) => {
+              if (c["Khối"] !== classGrade) return false;
+              const courseSubject = c["Môn học"];
+              if (courseSubject === classSubject) return true;
+              const subjectOption = subjectOptions.find(
+                (opt) => opt.label === classSubject || opt.value === classSubject
+              );
+              if (subjectOption) {
+                return courseSubject === subjectOption.label || courseSubject === subjectOption.value;
+              }
+              return false;
+            });
+          };
+          
+          const course = findCourse(classData);
+          // Học phí: ưu tiên từ session đã lưu (nếu đang update), fallback về class/course
+          // Liên kết trực tiếp với học phí học sinh
+          tuitionPerSession = 
+            (existingSession?.["Học phí mỗi buổi"] as number) ||
+            course?.Giá || 
+            (classData?.["Học phí mỗi buổi"] as number) || 
+            0;
+          
+          // Lương GV: ưu tiên từ session đã lưu (nếu đang update), fallback về class
+          // Liên kết trực tiếp với lương giáo viên
+          salaryPerSession = 
+            (existingSession?.["Lương GV"] as number) ||
+            (classData?.["Lương GV"] as number) ||
+            0;
+        } catch (error) {
+          console.error("Error fetching courses for tuition:", error);
+          // Fallback to class values
+          tuitionPerSession = existingSession?.["Học phí mỗi buổi"] || classData?.["Học phí mỗi buổi"] || 0;
+          salaryPerSession = existingSession?.["Lương GV"] || classData?.["Lương GV"] || 0;
+        }
+
         const sessionData: Omit<AttendanceSession, "id"> = {
           "Mã lớp": classData["Mã lớp"],
           "Tên lớp": classData["Tên lớp"],
@@ -1277,6 +1358,8 @@ const AttendanceSessionPage = () => {
           "Người hoàn thành": completionPerson,
           "Nội dung buổi học": lessonContent || "",
           "Tài liệu nội dung": lessonAttachments.length > 0 ? lessonAttachments : undefined,
+          "Học phí mỗi buổi": tuitionPerSession > 0 ? tuitionPerSession : undefined, // Lưu học phí vào session - liên kết với học phí học sinh
+          "Lương GV": salaryPerSession > 0 ? salaryPerSession : undefined, // Lưu lương vào session - liên kết với lương giáo viên
           "Bài tập":
             homeworkDescription || totalExercises || homeworkAttachments.length > 0
               ? {

@@ -77,12 +77,6 @@ const data = {
       adminOnly: true,
     },
     {
-      title: "Bảng chấm công",
-      url: "/workspace/staff-timesheet",
-      icon: IconChecklist,
-      adminOnly: true,
-    },
-    {
       title: "Quản lý lớp học",
       url: "/workspace/classes",
       icon: IconSchool,
